@@ -1,14 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TemplateCatalogItem } from "@/data/template-catalog";
 
 type Viewport = "desktop" | "mobile";
 
 const viewportClass: Record<Viewport, string> = {
   desktop: "h-full w-full",
-  mobile: "h-[calc(100vh-120px)] w-[390px] max-w-full rounded-[32px] border border-white/10 shadow-2xl",
+  mobile: "h-[calc(100dvh-120px)] w-[390px] max-w-full rounded-[32px] border border-white/10 shadow-2xl",
 };
 
 export function TemplatePreviewShell({
@@ -17,6 +17,52 @@ export function TemplatePreviewShell({
   template: TemplateCatalogItem;
 }) {
   const [viewport, setViewport] = useState<Viewport>("mobile");
+  const [isFrameReady, setIsFrameReady] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const frameSrc = `${template.previewUrl}?previewReload=${reloadToken}`;
+
+  const refreshFrame = () => {
+    setIsFrameReady(false);
+    setReloadToken((token) => token + 1);
+  };
+
+  const syncFrameCanvas = () => {
+    const frameWindow = iframeRef.current?.contentWindow;
+    if (!frameWindow) return;
+
+    frameWindow.dispatchEvent(new Event("resize"));
+    frameWindow.dispatchEvent(new Event("orientationchange"));
+  };
+
+  const handleFrameLoad = () => {
+    const startedAt = Date.now();
+
+    const markReadyWhenStable = () => {
+      const frameDocument = iframeRef.current?.contentDocument;
+      const loader = frameDocument?.getElementById("smartLoaderOverlay");
+      const loaderVisible =
+        loader &&
+        !loader.classList.contains("hidden") &&
+        getComputedStyle(loader).visibility !== "hidden" &&
+        getComputedStyle(loader).opacity !== "0";
+      const documentReady = frameDocument?.readyState === "complete";
+      const timedOut = Date.now() - startedAt > 4500;
+
+      if ((documentReady && !loaderVisible) || timedOut) {
+        syncFrameCanvas();
+        setTimeout(syncFrameCanvas, 120);
+        setTimeout(syncFrameCanvas, 450);
+        setTimeout(syncFrameCanvas, 900);
+        setIsFrameReady(true);
+        return;
+      }
+
+      window.setTimeout(markReadyWhenStable, 100);
+    };
+
+    requestAnimationFrame(markReadyWhenStable);
+  };
 
   useEffect(() => {
     const previousHtmlOverflow = document.documentElement.style.overflow;
@@ -74,14 +120,24 @@ export function TemplatePreviewShell({
             <ViewportButton
               label="Desktop"
               active={viewport === "desktop"}
-              onClick={() => setViewport("desktop")}
+              onClick={() => {
+                if (viewport === "desktop") return;
+                setIsFrameReady(false);
+                setViewport("desktop");
+                requestAnimationFrame(() => setReloadToken((token) => token + 1));
+              }}
             >
               <DesktopIcon />
             </ViewportButton>
             <ViewportButton
               label="Mobile"
               active={viewport === "mobile"}
-              onClick={() => setViewport("mobile")}
+              onClick={() => {
+                if (viewport === "mobile") return;
+                setIsFrameReady(false);
+                setViewport("mobile");
+                requestAnimationFrame(() => setReloadToken((token) => token + 1));
+              }}
             >
               <PhoneIcon />
             </ViewportButton>
@@ -93,12 +149,7 @@ export function TemplatePreviewShell({
             type="button"
             className="hidden h-11 w-11 items-center justify-center rounded-full bg-white/14 text-white transition-colors duration-200 hover:bg-white/22 sm:flex"
             aria-label="Reload preview"
-            onClick={() => {
-              const iframe = document.getElementById(
-                "template-preview-frame",
-              ) as HTMLIFrameElement | null;
-              if (iframe) iframe.src = iframe.src;
-            }}
+            onClick={refreshFrame}
           >
             <RefreshIcon />
           </button>
@@ -130,14 +181,26 @@ export function TemplatePreviewShell({
         </div>
       </header>
 
-      <section className="preview-stage flex h-[calc(100dvh-72px)] items-center justify-center overflow-hidden bg-[#0b0b0b] p-0 sm:p-6">
+      <section className="preview-stage relative flex h-[calc(100dvh-72px)] items-center justify-center overflow-hidden bg-[#0b0b0b] p-0 sm:p-6">
+        {!isFrameReady ? (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0b0b0b] text-white/70">
+            <div className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm backdrop-blur-md">
+              Loading preview...
+            </div>
+          </div>
+        ) : null}
         <iframe
+          ref={iframeRef}
           id="template-preview-frame"
+          key={`${template.slug}-${viewport}-${reloadToken}`}
           title={`${template.title} demo preview`}
-          src={template.previewUrl}
+          src={frameSrc}
+          loading="eager"
+          allow="autoplay; fullscreen"
           className={`${viewportClass[viewport]} bg-white`}
-          sandbox="allow-scripts allow-forms allow-popups allow-modals"
+          sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"
           referrerPolicy="no-referrer"
+          onLoad={handleFrameLoad}
         />
       </section>
     </main>
